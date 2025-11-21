@@ -7,6 +7,7 @@ import numpy as np
 from datetime import datetime, timedelta
 import uvicorn
 import os
+import asyncio
 from dotenv import load_dotenv
 
 import sys
@@ -143,8 +144,14 @@ async def predict_match(request: MatchPredictionRequest):
 async def get_upcoming_fixtures():
     """Get upcoming Premier League fixtures"""
     try:
-        fixtures = await data_service.get_upcoming_fixtures()
+        # Add timeout protection
+        fixtures = await asyncio.wait_for(
+            data_service.get_upcoming_fixtures(),
+            timeout=8.0  # 8 second timeout
+        )
         return fixtures
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Request timeout - server is processing data")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -161,8 +168,14 @@ async def get_batch_predictions():
 async def get_league_table(season: str = "2023-24"):
     """Get current Premier League table"""
     try:
-        table = await data_service.get_league_table(season)
+        # Add timeout protection
+        table = await asyncio.wait_for(
+            data_service.get_league_table(season),
+            timeout=8.0  # 8 second timeout
+        )
         return table
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Request timeout - server is processing data")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

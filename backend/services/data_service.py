@@ -40,16 +40,32 @@ class DataService:
         self.standings_data = {}
         self.competition_data = {}
         self.last_update = None
+        self._initializing = False  # Add initialization lock
+        self._init_lock = asyncio.Lock()  # Add async lock
         
     async def initialize_data(self):
         """Initialize data by fetching from API or using sample data"""
-        try:
-            # Try to fetch real data first
-            await self._fetch_real_data()
-        except Exception as e:
-            print(f"Could not fetch real data: {e}")
-            print("Using sample data instead...")
-            self._create_sample_data()
+        # Prevent concurrent initialization
+        if self._initializing:
+            # Wait for ongoing initialization
+            while self._initializing:
+                await asyncio.sleep(0.1)
+            return
+        
+        async with self._init_lock:
+            if self._initializing or self.matches_data:
+                return  # Already initialized or initializing
+            
+            self._initializing = True
+            try:
+                # Try to fetch real data first
+                await self._fetch_real_data()
+            except Exception as e:
+                print(f"Could not fetch real data: {e}")
+                print("Using sample data instead...")
+                self._create_sample_data()
+            finally:
+                self._initializing = False
     
     async def _fetch_real_data(self):
         """Fetch real Premier League data from API"""
@@ -248,8 +264,13 @@ class DataService:
     
     async def get_teams(self) -> List[Dict[str, Any]]:
         """Get list of all Premier League teams"""
-        if not self.teams_data:
+        if not self.teams_data and not self._initializing:
             await self.initialize_data()
+        elif not self.teams_data:
+            # If initializing, wait a bit then use sample data as fallback
+            await asyncio.sleep(0.5)
+            if not self.teams_data:
+                self._create_sample_data()  # Quick fallback
         
         return [
             {
@@ -263,8 +284,13 @@ class DataService:
     
     async def get_team_stats(self, team_name: str, season: str = "2023-24") -> Dict[str, Any]:
         """Get detailed statistics for a specific team"""
-        if not self.matches_data:
+        if not self.matches_data and not self._initializing:
             await self.initialize_data()
+        elif not self.matches_data:
+            # If initializing, wait a bit then use sample data as fallback
+            await asyncio.sleep(0.5)
+            if not self.matches_data:
+                self._create_sample_data()  # Quick fallback
         
         # Filter matches for the team
         team_matches = [
@@ -340,8 +366,14 @@ class DataService:
     
     async def get_upcoming_fixtures(self) -> List[Dict[str, Any]]:
         """Get upcoming Premier League fixtures"""
-        if not self.matches_data:
+        # Initialize if needed, but don't block if it's already initializing
+        if not self.matches_data and not self._initializing:
             await self.initialize_data()
+        elif not self.matches_data:
+            # If initializing, wait a bit then use sample data as fallback
+            await asyncio.sleep(0.5)
+            if not self.matches_data:
+                self._create_sample_data()  # Quick fallback
         
         upcoming_matches = [
             match for match in self.matches_data
@@ -398,8 +430,13 @@ class DataService:
                 print(f"Could not fetch standings from API: {e}, calculating from matches...")
         
         # Fall back to calculating from matches
-        if not self.matches_data:
+        if not self.matches_data and not self._initializing:
             await self.initialize_data()
+        elif not self.matches_data:
+            # If initializing, wait a bit then use sample data as fallback
+            await asyncio.sleep(0.5)
+            if not self.matches_data:
+                self._create_sample_data()  # Quick fallback
         
         team_stats = {}
         
