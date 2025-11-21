@@ -426,6 +426,14 @@ const Dashboard = () => {
   const [loadingFixtures, setLoadingFixtures] = useState(true);
 
   useEffect(() => {
+    // Debug: Log environment variable in development
+    if (process.env.NODE_ENV === 'development') {
+      console.log('Environment check:', {
+        NODE_ENV: process.env.NODE_ENV,
+        API_URL: process.env.REACT_APP_API_URL || 'Not set (using default)',
+      });
+    }
+    
     loadSchedulerStatus();
     loadTopTeams();
     loadTopTeamFixtures(); // Load fixtures immediately
