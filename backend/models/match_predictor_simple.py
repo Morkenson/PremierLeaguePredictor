@@ -219,25 +219,38 @@ class MatchPredictor:
         if not self.is_trained:
             raise ValueError("Model must be trained before making predictions")
         
-        # Create match row
+        # Create match row with placeholder data
         match_data = {
             'home_team': home_team,
             'away_team': away_team,
             'date': pd.Timestamp.now(),
             'season': '2023-24',
-            'home_score': 0,  # Placeholder
-            'away_score': 0,  # Placeholder
-            'result': 'D'  # Placeholder
+            'home_score': 0,  # Placeholder - won't be used for prediction
+            'away_score': 0,  # Placeholder - won't be used for prediction
+            'result': 'D',  # Placeholder - won't be used for prediction
+            'home_result': 'D',  # Placeholder - needed for feature calculation
+            'away_result': 'D'  # Placeholder - needed for feature calculation
         }
         
+        # Append new match to historical data for feature calculation
+        # This ensures features like form, averages, etc. are calculated correctly
         match_df = pd.DataFrame([match_data])
-        match_df_with_features = self.create_features(match_df)
+        combined_df = pd.concat([df, match_df], ignore_index=True)
         
-        # Prepare features
-        X = match_df_with_features[self.feature_columns].fillna(0)
+        # Create features using the combined dataset (this ensures historical context)
+        combined_df_with_features = self.create_features(combined_df)
+        
+        # Extract only the features for the new match (last row)
+        X = combined_df_with_features.iloc[[-1]][self.feature_columns].fillna(0)
+        
+        # Scale features if scaler exists
+        if 'main' in self.scalers:
+            X_scaled = self.scalers['main'].transform(X)
+        else:
+            X_scaled = X
         
         # Get predictions from ensemble model
-        probabilities = self.models['ensemble'].predict_proba(X)[0]
+        probabilities = self.models['ensemble'].predict_proba(X_scaled)[0]
         
         # Map probabilities to outcomes
         classes = self.models['ensemble'].classes_
