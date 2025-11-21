@@ -438,6 +438,14 @@ const Dashboard = () => {
     try {
       setLoadingTeams(true);
       const table = await apiService.getLeagueTable();
+      
+      // Ensure table is an array
+      if (!Array.isArray(table)) {
+        console.error('League table is not an array:', table);
+        setTopTeams([]);
+        return;
+      }
+      
       // Get top 6 teams
       const top = table.slice(0, 6);
       setTopTeams(top);
@@ -448,6 +456,7 @@ const Dashboard = () => {
       }
     } catch (error) {
       console.error('Failed to load top teams:', error);
+      setTopTeams([]);
     } finally {
       setLoadingTeams(false);
     }
@@ -460,10 +469,17 @@ const Dashboard = () => {
       
       console.log('Loaded fixtures:', fixtures);
       
+      // Ensure fixtures is an array
+      if (!Array.isArray(fixtures)) {
+        console.error('Fixtures is not an array:', fixtures);
+        setTopTeamFixtures([]);
+        return;
+      }
+      
       // Use provided team names or get from state
       const topTeamNames = teamNames !== null 
         ? teamNames 
-        : topTeams.map(team => team.team_name);
+        : (Array.isArray(topTeams) ? topTeams.map(team => team.team_name) : []);
       
       console.log('Filtering with team names:', topTeamNames);
       
@@ -573,7 +589,7 @@ const Dashboard = () => {
 
         {loadingFixtures ? (
           <LoadingSpinner>Loading fixtures...</LoadingSpinner>
-        ) : topTeamFixtures.length === 0 ? (
+        ) : !Array.isArray(topTeamFixtures) || topTeamFixtures.length === 0 ? (
           <LoadingSpinner>No upcoming fixtures for top teams</LoadingSpinner>
         ) : (
           <FixturesGrid>
@@ -633,6 +649,8 @@ const Dashboard = () => {
 
         {loadingTeams ? (
           <LoadingSpinner>Loading top teams...</LoadingSpinner>
+        ) : !Array.isArray(topTeams) || topTeams.length === 0 ? (
+          <LoadingSpinner>No teams available</LoadingSpinner>
         ) : (
           <TopTeamsGrid>
             {topTeams.map((team, index) => (
