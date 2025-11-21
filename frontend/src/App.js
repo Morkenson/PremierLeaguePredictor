@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { ThemeProvider as CustomThemeProvider, useTheme } from './contexts/ThemeContext';
 import { GlobalStyle } from './styles/GlobalStyle';
+import { Toaster } from 'react-hot-toast';
 import logoImage from './static/prem.webp';
 
 import Dashboard from './pages/Dashboard';
@@ -272,6 +273,29 @@ const AppContent = () => {
   return (
     <ThemeProvider theme={theme}>
       <GlobalStyle />
+      <Toaster
+        position="top-right"
+        toastOptions={{
+          duration: 3000,
+          style: {
+            background: theme.colors.surface,
+            color: theme.colors.text,
+            border: `1px solid ${theme.colors.border}`,
+          },
+          success: {
+            iconTheme: {
+              primary: theme.colors.success,
+              secondary: theme.colors.surface,
+            },
+          },
+          error: {
+            iconTheme: {
+              primary: theme.colors.error,
+              secondary: theme.colors.surface,
+            },
+          },
+        }}
+      />
       <AppContainer>
           <MobileMenuButton onClick={toggleSidebar}>
             {sidebarOpen ? <X size={20} /> : <Menu size={20} />}

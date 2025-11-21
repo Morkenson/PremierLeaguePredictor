@@ -16,6 +16,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from models.match_predictor_simple import MatchPredictor
 from services.data_service import DataService
 from services.prediction_service import PredictionService
+from services.scheduler_service import SchedulerService
 
 # Load environment variables
 load_dotenv()
@@ -29,7 +30,7 @@ app = FastAPI(
 # CORS middleware for React frontend
 # Get allowed origins from environment variable or use defaults
 frontend_url = os.getenv("FRONTEND_URL", "")
-allowed_origins = ["http://localhost:3000", "http://127.0.0.1:3000"]
+allowed_origins = ["http://localhost:3000", "http://127.0.0.1:3000", "https://premier-league-predictor-zach.vercel.app/"]
 if frontend_url:
     allowed_origins.append(frontend_url)
 
@@ -44,6 +45,7 @@ app.add_middleware(
 # Initialize services
 data_service = DataService()
 prediction_service = PredictionService()
+scheduler_service = SchedulerService(data_service, prediction_service)
 
 # Pydantic models for API
 class TeamInfo(BaseModel):
@@ -79,12 +81,24 @@ class TeamStats(BaseModel):
 
 @app.on_event("startup")
 async def startup_event():
-    """Initialize the prediction model on startup"""
+    """Initialize the prediction model and scheduler on startup"""
     try:
+        # Initialize data and model
         await prediction_service.initialize_model()
         print("SUCCESS: Prediction model initialized successfully")
+        
+        # Start daily update scheduler
+        scheduler_service.start_scheduler()
+        print("SUCCESS: Daily update scheduler started")
+        
     except Exception as e:
-        print(f"ERROR: Error initializing model: {e}")
+        print(f"ERROR: Error during startup: {e}")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Cleanup on shutdown"""
+    scheduler_service.stop_scheduler()
+    print("Scheduler stopped")
 
 @app.get("/")
 async def root():
@@ -149,6 +163,87 @@ async def get_league_table(season: str = "2023-24"):
     try:
         table = await data_service.get_league_table(season)
         return table
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/league-standings")
+async def get_league_standings(season: str = "2023-24"):
+    """Get league standings directly from API"""
+    try:
+        standings = await data_service.get_league_standings_from_api(season)
+        return standings
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/teams/{team_id}/matches")
+async def get_team_matches(team_id: int, limit: int = 10):
+    """Get all matches for a specific team"""
+    try:
+        matches = await data_service.get_team_matches(team_id, limit)
+        return matches
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/matches/{match_id}")
+async def get_match_details(match_id: int):
+    """Get detailed information about a specific match"""
+    try:
+        match = await data_service.get_match_details(match_id)
+        return match
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/competition")
+async def get_competition_info():
+    """Get Premier League competition information"""
+    try:
+        info = await data_service.get_competition_info()
+        return info
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/head-to-head/{team1_id}/{team2_id}")
+async def get_head_to_head(team1_id: int, team2_id: int):
+    """Get head-to-head record between two teams"""
+    try:
+        h2h = await data_service.get_head_to_head(team1_id, team2_id)
+        return h2h
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/admin/refresh-data")
+async def manual_refresh_data():
+    """Manually trigger data refresh and model retraining"""
+    try:
+        success = await scheduler_service.trigger_manual_update()
+        
+        if success:
+            return {
+                "status": "success",
+                "message": "Data refreshed and model retrained successfully",
+                "timestamp": datetime.now().isoformat(),
+                "last_update": data_service.last_update.isoformat() if data_service.last_update else None
+            }
+        else:
+            return {
+                "status": "error",
+                "message": "Data refresh failed, using existing data",
+                "timestamp": datetime.now().isoformat()
+            }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/admin/scheduler-status")
+async def get_scheduler_status():
+    """Get scheduler status and next run time"""
+    try:
+        next_run = scheduler_service.get_next_run_time()
+        return {
+            "scheduler_running": scheduler_service.is_running,
+            "next_update": next_run.isoformat() if next_run else None,
+            "last_update": data_service.last_update.isoformat() if data_service.last_update else None,
+            "timestamp": datetime.now().isoformat()
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

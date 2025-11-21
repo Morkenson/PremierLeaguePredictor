@@ -99,12 +99,20 @@ Once the backend is running, you can access the interactive API documentation at
 
 ### Key Endpoints
 
+**Core Endpoints:**
 - `GET /teams` - Get all Premier League teams
 - `GET /teams/{team_name}/stats` - Get team statistics
 - `POST /predict` - Predict match outcome
 - `GET /predictions/batch` - Get batch predictions
 - `GET /fixtures` - Get upcoming fixtures
-- `GET /league-table` - Get current league table
+- `GET /league-table` - Get current league table (uses API if available, falls back to calculated)
+
+**New API Endpoints (Free Tier):**
+- `GET /league-standings` - Get league standings directly from API
+- `GET /teams/{team_id}/matches?limit={limit}` - Get all matches for a specific team
+- `GET /matches/{match_id}` - Get detailed information about a specific match
+- `GET /competition` - Get Premier League competition information
+- `GET /head-to-head/{team1_id}/{team2_id}` - Get head-to-head record between two teams
 
 ## 🎯 Usage
 
@@ -199,14 +207,28 @@ REACT_APP_ENVIRONMENT=development
 
 ### API Configuration
 
-For production use with real data, update the API key in `backend/services/data_service.py`:
+The app now supports the football-data.org API. To use real data:
 
-```python
-self.headers = {
-    "X-Auth-Token": "YOUR_FOOTBALL_DATA_API_KEY",
-    "Content-Type": "application/json"
-}
-```
+1. **Get a free API key** from [football-data.org](https://www.football-data.org/)
+2. **Create a `.env` file** in the `backend` directory:
+   ```env
+   FOOTBALL_DATA_API_KEY=your_actual_api_key_here
+   FRONTEND_URL=http://localhost:3000
+   ```
+3. **Add `.env` to `.gitignore`** to keep your API key secure
+
+The app will automatically:
+- Use the API if a valid key is provided
+- Fall back to sample data if the API key is missing or invalid
+- Handle rate limits (10 requests/minute on free tier)
+
+**Free Tier Features:**
+- ✅ League standings
+- ✅ Team information and matches
+- ✅ Match details and scores
+- ✅ Competition information
+- ✅ Head-to-head records
+- ✅ Fixtures and results
 
 ## 📊 Data Sources
 
