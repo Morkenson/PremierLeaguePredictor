@@ -1,5 +1,6 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 import pandas as pd
@@ -8,7 +9,12 @@ from datetime import datetime, timedelta
 import uvicorn
 import os
 import asyncio
+import time
+import logging
 from dotenv import load_dotenv
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 import sys
 import os
@@ -31,16 +37,33 @@ app = FastAPI(
 # CORS middleware for React frontend
 # Get allowed origins from environment variable or use defaults
 frontend_url = os.getenv("FRONTEND_URL", "")
-allowed_origins = ["http://localhost:3000", "http://127.0.0.1:3000", "https://premier-league-predictor-zach.vercel.app/"]
+allowed_origins = [
+    "http://localhost:3000", 
+    "http://127.0.0.1:3000",
+    "https://premier-league-predictor-zach.vercel.app",  # Remove trailing slash
+]
+
 if frontend_url:
     allowed_origins.append(frontend_url)
+    # Also add without protocol variations
+    if frontend_url.startswith("https://"):
+        allowed_origins.append(frontend_url.replace("https://", "http://"))
+
+# For production, be more permissive with Vercel domains
+if os.getenv("ENVIRONMENT") == "production" or not os.getenv("ENVIRONMENT"):
+    # Allow common Vercel patterns
+    allowed_origins.extend([
+        "https://*.vercel.app",
+        "http://*.vercel.app",
+    ])
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allowed_origins,
+    allow_origins=["*"],  # Temporarily allow all for debugging - can restrict later
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],  # Expose all headers
 )
 
 # Initialize services
@@ -79,6 +102,30 @@ class TeamStats(BaseModel):
     form: List[str]  # Last 5 results
     home_record: Dict[str, int]
     away_record: Dict[str, int]
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    """Log all requests and responses"""
+    start_time = time.time()
+    logger.info(f"Request: {request.method} {request.url}")
+    logger.info(f"Origin: {request.headers.get('origin', 'No origin')}")
+    
+    try:
+        response = await call_next(request)
+        process_time = time.time() - start_time
+        logger.info(f"Response: {response.status_code} - {process_time:.2f}s")
+        return response
+    except Exception as e:
+        process_time = time.time() - start_time
+        logger.error(f"Error processing request after {process_time:.2f}s: {e}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={"detail": str(e)},
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Content-Type": "application/json"
+            }
+        )
 
 @app.on_event("startup")
 async def startup_event():
@@ -144,16 +191,40 @@ async def predict_match(request: MatchPredictionRequest):
 async def get_upcoming_fixtures():
     """Get upcoming Premier League fixtures"""
     try:
+        logger.info("Fetching fixtures...")
         # Add timeout protection
         fixtures = await asyncio.wait_for(
             data_service.get_upcoming_fixtures(),
             timeout=8.0  # 8 second timeout
         )
-        return fixtures
+        logger.info(f"Returning {len(fixtures)} fixtures")
+        return JSONResponse(
+            content=fixtures,
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Content-Type": "application/json"
+            }
+        )
     except asyncio.TimeoutError:
-        raise HTTPException(status_code=504, detail="Request timeout - server is processing data")
+        logger.error("Timeout getting fixtures")
+        return JSONResponse(
+            status_code=504,
+            content={"detail": "Request timeout - server is processing data"},
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Content-Type": "application/json"
+            }
+        )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error getting fixtures: {e}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={"detail": str(e)},
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Content-Type": "application/json"
+            }
+        )
 
 @app.get("/predictions/batch")
 async def get_batch_predictions():
@@ -168,16 +239,40 @@ async def get_batch_predictions():
 async def get_league_table(season: str = "2023-24"):
     """Get current Premier League table"""
     try:
+        logger.info(f"Fetching league table for season {season}...")
         # Add timeout protection
         table = await asyncio.wait_for(
             data_service.get_league_table(season),
             timeout=8.0  # 8 second timeout
         )
-        return table
+        logger.info(f"Returning league table with {len(table)} teams")
+        return JSONResponse(
+            content=table,
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Content-Type": "application/json"
+            }
+        )
     except asyncio.TimeoutError:
-        raise HTTPException(status_code=504, detail="Request timeout - server is processing data")
+        logger.error("Timeout getting league table")
+        return JSONResponse(
+            status_code=504,
+            content={"detail": "Request timeout - server is processing data"},
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Content-Type": "application/json"
+            }
+        )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error getting league table: {e}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={"detail": str(e)},
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Content-Type": "application/json"
+            }
+        )
 
 @app.get("/league-standings")
 async def get_league_standings(season: str = "2023-24"):
@@ -250,15 +345,32 @@ async def manual_refresh_data():
 async def get_scheduler_status():
     """Get scheduler status and next run time"""
     try:
+        logger.info("Fetching scheduler status...")
         next_run = scheduler_service.get_next_run_time()
-        return {
+        status = {
             "scheduler_running": scheduler_service.is_running,
             "next_update": next_run.isoformat() if next_run else None,
             "last_update": data_service.last_update.isoformat() if data_service.last_update else None,
             "timestamp": datetime.now().isoformat()
         }
+        logger.info(f"Returning scheduler status: {status}")
+        return JSONResponse(
+            content=status,
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Content-Type": "application/json"
+            }
+        )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error getting scheduler status: {e}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={"detail": str(e)},
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Content-Type": "application/json"
+            }
+        )
 
 if __name__ == "__main__":
     uvicorn.run(
