@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import styled from 'styled-components';
 import { motion } from 'framer-motion';
-import { Calendar, Clock, Target, Loader } from 'lucide-react';
+import { Calendar, Clock, Loader } from 'lucide-react';
 import { apiService } from '../services/api';
 import toast from 'react-hot-toast';
 
@@ -128,19 +128,6 @@ const VS = styled.div`
   margin: ${props => props.theme.spacing.sm} 0;
 `;
 
-const PredictionBadge = styled.div`
-  margin-top: ${props => props.theme.spacing.md};
-  padding: ${props => props.theme.spacing.sm} ${props => props.theme.spacing.md};
-  background: ${props => props.theme.gradients.primarySubtle};
-  border: 1px solid ${props => props.theme.colors.primary};
-  border-radius: ${props => props.theme.borderRadius.medium};
-  display: flex;
-  align-items: center;
-  gap: ${props => props.theme.spacing.sm};
-  font-size: ${props => props.theme.typography.fontSize.sm};
-  color: ${props => props.theme.colors.primary};
-`;
-
 const LoadingContainer = styled.div`
   display: flex;
   flex-direction: column;
@@ -177,13 +164,11 @@ const EmptyState = styled.div`
 
 const Fixtures = () => {
   const [fixtures, setFixtures] = useState([]);
-  const [predictions, setPredictions] = useState({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
   useEffect(() => {
     loadFixtures();
-    loadPredictions();
   }, []);
 
   const loadFixtures = async () => {
@@ -201,21 +186,6 @@ const Fixtures = () => {
     }
   };
 
-  const loadPredictions = async () => {
-    try {
-      const data = await apiService.getBatchPredictions();
-      const predictionsMap = {};
-      data.forEach((pred) => {
-        const key = `${pred.home_team}_${pred.away_team}`;
-        predictionsMap[key] = pred;
-      });
-      setPredictions(predictionsMap);
-    } catch (error) {
-      console.error('Failed to load predictions:', error);
-      // Don't show error for predictions, they're optional
-    }
-  };
-
   const formatDate = (dateString) => {
     if (!dateString) return 'TBD';
     const date = new Date(dateString);
@@ -226,11 +196,6 @@ const Fixtures = () => {
       hour: '2-digit',
       minute: '2-digit'
     });
-  };
-
-  const getPrediction = (homeTeam, awayTeam) => {
-    const key = `${homeTeam}_${awayTeam}`;
-    return predictions[key];
   };
 
   if (loading) {
@@ -262,7 +227,7 @@ const Fixtures = () => {
         <HeaderSection>
           <PageTitle>Upcoming Fixtures</PageTitle>
           <PageSubtitle>
-            Premier League matches with AI-powered predictions
+            Upcoming Premier League matches
           </PageSubtitle>
         </HeaderSection>
 
@@ -273,53 +238,41 @@ const Fixtures = () => {
           </EmptyState>
         ) : (
           <FixturesGrid>
-            {fixtures.map((fixture, index) => {
-              const prediction = getPrediction(fixture.home_team, fixture.away_team);
-              return (
-                <FixtureCard
-                  key={index}
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.5, delay: index * 0.1 }}
-                  whileHover={{ scale: 1.02 }}
-                >
-                  <FixtureHeader>
-                    <FixtureDate>
-                      <Clock size={16} />
-                      {formatDate(fixture.date)}
-                    </FixtureDate>
-                    <FixtureStatus status={fixture.status}>
-                      {fixture.status}
-                    </FixtureStatus>
-                  </FixtureHeader>
+            {fixtures.map((fixture, index) => (
+              <FixtureCard
+                key={index}
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.5, delay: index * 0.1 }}
+                whileHover={{ scale: 1.02 }}
+              >
+                <FixtureHeader>
+                  <FixtureDate>
+                    <Clock size={16} />
+                    {formatDate(fixture.date)}
+                  </FixtureDate>
+                  <FixtureStatus status={fixture.status}>
+                    {fixture.status}
+                  </FixtureStatus>
+                </FixtureHeader>
 
-                  <TeamsContainer>
-                    <TeamRow>
-                      <TeamName>{fixture.home_team}</TeamName>
-                      {fixture.score && (
-                        <Score>{fixture.score.home || '-'}</Score>
-                      )}
-                    </TeamRow>
-                    <VS>VS</VS>
-                    <TeamRow>
-                      <TeamName>{fixture.away_team}</TeamName>
-                      {fixture.score && (
-                        <Score>{fixture.score.away || '-'}</Score>
-                      )}
-                    </TeamRow>
-                  </TeamsContainer>
-
-                  {prediction && (
-                    <PredictionBadge>
-                      <Target size={16} />
-                      Prediction: {prediction.home_team} {Math.round(prediction.home_win_probability * 100)}% | 
-                      Draw {Math.round(prediction.draw_probability * 100)}% | 
-                      {prediction.away_team} {Math.round(prediction.away_win_probability * 100)}%
-                    </PredictionBadge>
-                  )}
-                </FixtureCard>
-              );
-            })}
+                <TeamsContainer>
+                  <TeamRow>
+                    <TeamName>{fixture.home_team}</TeamName>
+                    {fixture.score && (
+                      <Score>{fixture.score.home || '-'}</Score>
+                    )}
+                  </TeamRow>
+                  <VS>VS</VS>
+                  <TeamRow>
+                    <TeamName>{fixture.away_team}</TeamName>
+                    {fixture.score && (
+                      <Score>{fixture.score.away || '-'}</Score>
+                    )}
+                  </TeamRow>
+                </TeamsContainer>
+              </FixtureCard>
+            ))}
           </FixturesGrid>
         )}
       </motion.div>

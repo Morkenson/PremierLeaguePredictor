@@ -1,30 +1,12 @@
 import pandas as pd
 import numpy as np
-import requests
 import json
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
 import asyncio
 import aiohttp
-from dataclasses import dataclass
 import os
 from dotenv import load_dotenv
-
-@dataclass
-class Team:
-    name: str
-    id: int
-    short_name: str = ""
-    logo_url: str = ""
-
-@dataclass
-class Match:
-    home_team: str
-    away_team: str
-    date: datetime
-    home_score: Optional[int] = None
-    away_score: Optional[int] = None
-    status: str = "scheduled"
 
 class DataService:
     def __init__(self):
@@ -43,8 +25,15 @@ class DataService:
         self._initializing = False  # Add initialization lock
         self._init_lock = asyncio.Lock()  # Add async lock
         
+        # Cache configuration
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        backend_dir = os.path.dirname(current_dir)  # Go up from services/ to backend/
+        self.cache_dir = os.path.join(backend_dir, 'data_cache')
+        self.cache_expiry_hours = 24  # Cache expires after 24 hours
+        os.makedirs(self.cache_dir, exist_ok=True)
+        
     async def initialize_data(self):
-        """Initialize data by fetching from API or using sample data"""
+        """Initialize data by loading from cache or fetching from API"""
         # Prevent concurrent initialization
         if self._initializing:
             # Wait for ongoing initialization
@@ -58,12 +47,29 @@ class DataService:
             
             self._initializing = True
             try:
-                # Try to fetch real data first
+                # Try to load from cache first
+                if self._load_from_cache():
+                    print("SUCCESS: Loaded data from cache")
+                    return
+                
+                # If cache not available or expired, fetch from API
+                print("Cache not available or expired, fetching from API...")
                 await self._fetch_real_data()
+                
+                # Save to cache after successful fetch
+                self._save_to_cache()
+                print("SUCCESS: Data saved to cache")
+                
             except Exception as e:
-                print(f"Could not fetch real data: {e}")
-                print("Using sample data instead...")
-                self._create_sample_data()
+                # If API fetch fails, try to use stale cache
+                if self._load_from_cache(allow_stale=True):
+                    print(f"WARNING: API fetch failed: {str(e)}. Using stale cache data.")
+                    return
+                
+                error_msg = f"Failed to fetch data from API: {str(e)}. No cache available. Please ensure FOOTBALL_DATA_API_KEY is set and valid."
+                print(f"ERROR: {error_msg}")
+                self._initializing = False
+                raise ValueError(error_msg)
             finally:
                 self._initializing = False
     
@@ -81,7 +87,7 @@ class DataService:
                 async with session.get(comp_url, headers=self.headers) as response:
                     if response.status == 200:
                         self.competition_data = await response.json()
-                        print(f"✅ Loaded competition data: {self.competition_data.get('name', 'Premier League')}")
+                        print(f"SUCCESS: Loaded competition data: {self.competition_data.get('name', 'Premier League')}")
                     elif response.status == 403:
                         raise ValueError("Invalid API key or rate limit exceeded")
                     elif response.status == 429:
@@ -93,7 +99,7 @@ class DataService:
                     if response.status == 200:
                         teams_data = await response.json()
                         self.teams_data = {team['name']: team for team in teams_data['teams']}
-                        print(f"✅ Loaded {len(self.teams_data)} teams from API")
+                        print(f"SUCCESS: Loaded {len(self.teams_data)} teams from API")
                     elif response.status == 403:
                         raise ValueError("Invalid API key or rate limit exceeded")
                     elif response.status == 429:
@@ -105,7 +111,7 @@ class DataService:
                     if response.status == 200:
                         matches_data = await response.json()
                         self.matches_data = matches_data['matches']
-                        print(f"✅ Loaded {len(self.matches_data)} matches from API")
+                        print(f"SUCCESS: Loaded {len(self.matches_data)} matches from API")
                     elif response.status == 403:
                         raise ValueError("Invalid API key or rate limit exceeded")
                     elif response.status == 429:
@@ -118,7 +124,7 @@ class DataService:
                         standings_data = await response.json()
                         if standings_data.get('standings'):
                             self.standings_data = standings_data['standings'][0]  # Get first standings table
-                            print(f"✅ Loaded league standings from API")
+                            print(f"SUCCESS: Loaded league standings from API")
                     # Don't fail if standings fail, it's optional
                     
             except aiohttp.ClientError as e:
@@ -128,18 +134,97 @@ class DataService:
             
             # Update last update timestamp
             self.last_update = datetime.now()
-            print(f"✅ Data refresh completed at {self.last_update.isoformat()}")
+            print(f"SUCCESS: Data refresh completed at {self.last_update.isoformat()}")
+    
+    def _get_cache_file_path(self, filename: str) -> str:
+        """Get the full path to a cache file"""
+        return os.path.join(self.cache_dir, filename)
+    
+    def _save_to_cache(self):
+        """Save current data to cache files"""
+        try:
+            cache_data = {
+                'teams_data': self.teams_data,
+                'matches_data': self.matches_data,
+                'standings_data': self.standings_data,
+                'competition_data': self.competition_data,
+                'last_update': self.last_update.isoformat() if self.last_update else None
+            }
+            
+            cache_file = self._get_cache_file_path('api_data.json')
+            with open(cache_file, 'w', encoding='utf-8') as f:
+                json.dump(cache_data, f, indent=2, default=str)
+            
+            print(f"SUCCESS: Saved data to cache: {cache_file}")
+        except Exception as e:
+            print(f"WARNING: Failed to save cache: {e}")
+    
+    def _load_from_cache(self, allow_stale: bool = False) -> bool:
+        """Load data from cache if available and not expired
+        
+        Args:
+            allow_stale: If True, load cache even if expired (for fallback)
+        
+        Returns:
+            True if data was loaded successfully, False otherwise
+        """
+        try:
+            cache_file = self._get_cache_file_path('api_data.json')
+            
+            if not os.path.exists(cache_file):
+                print("INFO: No cache file found")
+                return False
+            
+            # Check cache age
+            cache_mtime = datetime.fromtimestamp(os.path.getmtime(cache_file))
+            cache_age = datetime.now() - cache_mtime
+            
+            if not allow_stale and cache_age > timedelta(hours=self.cache_expiry_hours):
+                print(f"INFO: Cache expired ({cache_age.total_seconds() / 3600:.1f} hours old)")
+                return False
+            
+            # Load cache data
+            with open(cache_file, 'r', encoding='utf-8') as f:
+                cache_data = json.load(f)
+            
+            self.teams_data = cache_data.get('teams_data', {})
+            self.matches_data = cache_data.get('matches_data', [])
+            self.standings_data = cache_data.get('standings_data', {})
+            self.competition_data = cache_data.get('competition_data', {})
+            
+            # Restore last_update timestamp
+            last_update_str = cache_data.get('last_update')
+            if last_update_str:
+                try:
+                    self.last_update = datetime.fromisoformat(last_update_str)
+                except:
+                    self.last_update = cache_mtime
+            else:
+                self.last_update = cache_mtime
+            
+            cache_age_str = f"({cache_age.total_seconds() / 3600:.1f} hours old)" if cache_age.total_seconds() > 0 else ""
+            print(f"SUCCESS: Loaded from cache: {len(self.teams_data)} teams, {len(self.matches_data)} matches {cache_age_str}")
+            
+            return True
+            
+        except Exception as e:
+            print(f"WARNING: Failed to load cache: {e}")
+            return False
     
     async def refresh_data(self):
         """Refresh all data from API"""
         try:
-            print("🔄 Starting daily data refresh...")
+            print("Starting daily data refresh...")
             await self._fetch_real_data()
-            print("✅ Daily data refresh completed successfully")
+            
+            # Save to cache after successful refresh
+            self._save_to_cache()
+            
+            print("SUCCESS: Daily data refresh completed successfully")
             return True
         except Exception as e:
-            print(f"❌ Error during data refresh: {e}")
-            print("⚠️  Keeping existing data, will retry on next scheduled update")
+            print(f"ERROR: Error during data refresh: {e}")
+            print("WARNING: Keeping existing data, will retry on next scheduled update")
             return False
     
     def _create_sample_data(self):
@@ -174,37 +259,45 @@ class DataService:
         start_date = datetime(2023, 8, 12)  # Premier League start date
         now = datetime.now()
         
+        # Ensure we have enough finished matches for training (at least 30 matches)
+        finished_count = 0
+        target_finished = max(30, len(teams) * 2)  # At least 30, or 2 per team
+        
         for week in range(38):  # 38 gameweeks
             week_matches = []
             remaining_teams = teams.copy()
             
-            # Create fixtures for this week
+            # Create fixtures for this week (10 matches per week for 20 teams)
             while len(remaining_teams) >= 2:
                 home_team = remaining_teams.pop(np.random.randint(len(remaining_teams)))
                 away_team = remaining_teams.pop(np.random.randint(len(remaining_teams)))
                 
-                # Generate match date - for past matches use historical dates, for future use varied future dates
-                if week < 20:  # First half of season - mostly in past
+                # Generate match date - prioritize finished matches for training data
+                if finished_count < target_finished:
+                    # Create past matches to ensure we have training data
+                    days_ago = np.random.randint(1, 200)  # Random date in past 200 days
+                    match_date = now - timedelta(days=days_ago)
+                    is_completed = True
+                elif week < 25:  # First 25 weeks - mostly in past
                     match_date = start_date + timedelta(weeks=week, days=np.random.randint(7))
-                else:  # Second half - create varied future dates
-                    days_from_now = (week - 20) * 7 + np.random.randint(0, 7) + np.random.randint(0, 3)
+                    is_completed = match_date < now
+                else:  # Remaining weeks - future matches
+                    days_from_now = (week - 25) * 7 + np.random.randint(0, 7)
                     match_date = now + timedelta(days=days_from_now)
-                    # Add random hours and minutes for variety
                     match_date = match_date.replace(
-                        hour=np.random.randint(12, 21),  # Between 12 PM and 9 PM
+                        hour=np.random.randint(12, 21),
                         minute=np.random.choice([0, 15, 30, 45])
                     )
-                
-                # Determine if match is completed
-                is_completed = match_date < now
+                    is_completed = False
                 
                 if is_completed:
+                    finished_count += 1
                     # Generate realistic scores based on team strength
                     home_strength = self._get_team_strength(home_team)
                     away_strength = self._get_team_strength(away_team)
                     
-                    home_score = np.random.poisson(1.5 + home_strength)
-                    away_score = np.random.poisson(1.2 + away_strength)
+                    home_score = max(0, int(np.random.poisson(1.5 + home_strength)))
+                    away_score = max(0, int(np.random.poisson(1.2 + away_strength)))
                     
                     # Determine result
                     if home_score > away_score:
@@ -234,6 +327,7 @@ class DataService:
                 
                 matches.append(match)
         
+        print(f"Generated {len(matches)} matches, {finished_count} finished matches for training")
         return matches
     
     def _get_team_strength(self, team: str) -> float:
@@ -267,10 +361,13 @@ class DataService:
         if not self.teams_data and not self._initializing:
             await self.initialize_data()
         elif not self.teams_data:
-            # If initializing, wait a bit then use sample data as fallback
+            # If initializing, wait a bit
             await asyncio.sleep(0.5)
             if not self.teams_data:
-                self._create_sample_data()  # Quick fallback
+                raise ValueError("No team data available. Please ensure data is initialized from API first.")
+        
+        if not self.teams_data:
+            raise ValueError("No team data available. Please ensure data is initialized from API first.")
         
         return [
             {
@@ -287,10 +384,13 @@ class DataService:
         if not self.matches_data and not self._initializing:
             await self.initialize_data()
         elif not self.matches_data:
-            # If initializing, wait a bit then use sample data as fallback
+            # If initializing, wait a bit
             await asyncio.sleep(0.5)
             if not self.matches_data:
-                self._create_sample_data()  # Quick fallback
+                raise ValueError("No match data available. Please ensure data is initialized from API first.")
+        
+        if not self.matches_data:
+            raise ValueError("No match data available. Please ensure data is initialized from API first.")
         
         # Filter matches for the team
         team_matches = [
@@ -370,10 +470,13 @@ class DataService:
         if not self.matches_data and not self._initializing:
             await self.initialize_data()
         elif not self.matches_data:
-            # If initializing, wait a bit then use sample data as fallback
+            # If initializing, wait a bit
             await asyncio.sleep(0.5)
             if not self.matches_data:
-                self._create_sample_data()  # Quick fallback
+                raise ValueError("No match data available. Please ensure data is initialized from API first.")
+        
+        if not self.matches_data:
+            raise ValueError("No match data available. Please ensure data is initialized from API first.")
         
         upcoming_matches = [
             match for match in self.matches_data
@@ -401,7 +504,7 @@ class DataService:
                 if 'T' in date_str:
                     date_str = date_str + 'Z'
             
-            # Get team names - handle both API format and sample format
+            # Get team names - handle API format
             home_team = match.get('homeTeam', {}).get('name') if isinstance(match.get('homeTeam'), dict) else match.get('home_team', 'Unknown')
             away_team = match.get('awayTeam', {}).get('name') if isinstance(match.get('awayTeam'), dict) else match.get('away_team', 'Unknown')
             
@@ -433,10 +536,13 @@ class DataService:
         if not self.matches_data and not self._initializing:
             await self.initialize_data()
         elif not self.matches_data:
-            # If initializing, wait a bit then use sample data as fallback
+            # If initializing, wait a bit
             await asyncio.sleep(0.5)
             if not self.matches_data:
-                self._create_sample_data()  # Quick fallback
+                raise ValueError("No match data available. Please ensure data is initialized from API first.")
+        
+        if not self.matches_data:
+            raise ValueError("No match data available. Please ensure data is initialized from API first.")
         
         team_stats = {}
         
@@ -470,42 +576,76 @@ class DataService:
         return table
     
     def get_training_data(self) -> pd.DataFrame:
-        """Get training data for ML model"""
+        """Get training data for ML model - raises error if no data available"""
         if not self.matches_data:
-            self._create_sample_data()
+            raise ValueError("No match data available. Please ensure data is initialized from API first.")
         
         training_data = []
         
         for match in self.matches_data:
-            if match['status'] == 'FINISHED':
-                # Determine result based on scores
-                home_score = match['score']['fullTime']['home']
-                away_score = match['score']['fullTime']['away']
-                
-                if home_score > away_score:
-                    result = 'H'
-                    home_result = 'W'
-                    away_result = 'L'
-                elif away_score > home_score:
-                    result = 'A'
-                    home_result = 'L'
-                    away_result = 'W'
-                else:
-                    result = 'D'
-                    home_result = 'D'
-                    away_result = 'D'
-                
-                training_data.append({
-                    'home_team': match['homeTeam']['name'],
-                    'away_team': match['awayTeam']['name'],
-                    'date': pd.to_datetime(match['utcDate']),
-                    'season': '2023-24',
-                    'home_score': home_score,
-                    'away_score': away_score,
-                    'result': result,
-                    'home_result': home_result,
-                    'away_result': away_result
-                })
+            if match.get('status') == 'FINISHED':
+                try:
+                    # Safely get scores
+                    score_data = match.get('score', {})
+                    full_time = score_data.get('fullTime', {}) if isinstance(score_data, dict) else {}
+                    home_score = full_time.get('home')
+                    away_score = full_time.get('away')
+                    
+                    # Skip if scores are None or not valid numbers
+                    if home_score is None or away_score is None:
+                        continue
+                    
+                    # Get team names safely
+                    home_team_data = match.get('homeTeam', {})
+                    away_team_data = match.get('awayTeam', {})
+                    home_team = home_team_data.get('name') if isinstance(home_team_data, dict) else str(home_team_data)
+                    away_team = away_team_data.get('name') if isinstance(away_team_data, dict) else str(away_team_data)
+                    
+                    if not home_team or not away_team:
+                        continue
+                    
+                    # Determine result based on scores
+                    if home_score > away_score:
+                        result = 'H'
+                        home_result = 'W'
+                        away_result = 'L'
+                    elif away_score > home_score:
+                        result = 'A'
+                        home_result = 'L'
+                        away_result = 'W'
+                    else:
+                        result = 'D'
+                        home_result = 'D'
+                        away_result = 'D'
+                    
+                    # Get date safely
+                    date_str = match.get('utcDate') or match.get('date')
+                    if date_str:
+                        try:
+                            match_date = pd.to_datetime(date_str)
+                        except:
+                            match_date = pd.Timestamp.now()
+                    else:
+                        match_date = pd.Timestamp.now()
+                    
+                    training_data.append({
+                        'home_team': home_team,
+                        'away_team': away_team,
+                        'date': match_date,
+                        'season': '2023-24',
+                        'home_score': int(home_score),
+                        'away_score': int(away_score),
+                        'result': result,
+                        'home_result': home_result,
+                        'away_result': away_result
+                    })
+                except Exception as e:
+                    print(f"Error processing match data: {e}")
+                    continue
+        
+        if len(training_data) == 0:
+            print("WARNING: No valid training data found")
+            return pd.DataFrame()
         
         return pd.DataFrame(training_data)
     
@@ -546,184 +686,3 @@ class DataService:
                 else:
                     raise ValueError(f"API returned status {response.status}")
     
-    async def get_team_matches(self, team_id: int, limit: int = 10) -> List[Dict[str, Any]]:
-        """Get all matches for a specific team"""
-        api_key = os.getenv("FOOTBALL_DATA_API_KEY", "")
-        if not api_key:
-            raise ValueError("No API key configured")
-        
-        async with aiohttp.ClientSession() as session:
-            matches_url = f"{self.base_url}/teams/{team_id}/matches?limit={limit}"
-            async with session.get(matches_url, headers=self.headers) as response:
-                if response.status == 200:
-                    matches_data = await response.json()
-                    matches = matches_data.get('matches', [])
-                    return [
-                        {
-                            'id': match.get('id'),
-                            'home_team': match['homeTeam']['name'],
-                            'away_team': match['awayTeam']['name'],
-                            'date': match['utcDate'],
-                            'status': match['status'],
-                            'matchday': match.get('matchday'),
-                            'score': {
-                                'home': match['score']['fullTime'].get('home') if match['score'].get('fullTime') else None,
-                                'away': match['score']['fullTime'].get('away') if match['score'].get('fullTime') else None
-                            },
-                            'competition': match.get('competition', {}).get('name', 'Premier League')
-                        }
-                        for match in matches
-                    ]
-                elif response.status == 403:
-                    raise ValueError("Invalid API key or rate limit exceeded")
-                elif response.status == 429:
-                    raise ValueError("Rate limit exceeded")
-                else:
-                    raise ValueError(f"API returned status {response.status}")
-    
-    async def get_match_details(self, match_id: int) -> Dict[str, Any]:
-        """Get detailed information about a specific match"""
-        api_key = os.getenv("FOOTBALL_DATA_API_KEY", "")
-        if not api_key:
-            raise ValueError("No API key configured")
-        
-        async with aiohttp.ClientSession() as session:
-            match_url = f"{self.base_url}/matches/{match_id}"
-            async with session.get(match_url, headers=self.headers) as response:
-                if response.status == 200:
-                    match_data = await response.json()
-                    return {
-                        'id': match_data.get('id'),
-                        'home_team': match_data['homeTeam']['name'],
-                        'away_team': match_data['awayTeam']['name'],
-                        'date': match_data['utcDate'],
-                        'status': match_data['status'],
-                        'matchday': match_data.get('matchday'),
-                        'competition': match_data.get('competition', {}).get('name', 'Premier League'),
-                        'score': {
-                            'full_time': {
-                                'home': match_data['score']['fullTime'].get('home') if match_data['score'].get('fullTime') else None,
-                                'away': match_data['score']['fullTime'].get('away') if match_data['score'].get('fullTime') else None
-                            },
-                            'half_time': {
-                                'home': match_data['score']['halfTime'].get('home') if match_data['score'].get('halfTime') else None,
-                                'away': match_data['score']['halfTime'].get('away') if match_data['score'].get('halfTime') else None
-                            }
-                        },
-                        'venue': match_data.get('venue', ''),
-                        'referee': match_data.get('referees', [{}])[0].get('name', '') if match_data.get('referees') else ''
-                    }
-                elif response.status == 403:
-                    raise ValueError("Invalid API key or rate limit exceeded")
-                elif response.status == 429:
-                    raise ValueError("Rate limit exceeded")
-                elif response.status == 404:
-                    raise ValueError("Match not found")
-                else:
-                    raise ValueError(f"API returned status {response.status}")
-    
-    async def get_competition_info(self) -> Dict[str, Any]:
-        """Get Premier League competition information"""
-        api_key = os.getenv("FOOTBALL_DATA_API_KEY", "")
-        if not api_key:
-            raise ValueError("No API key configured")
-        
-        async with aiohttp.ClientSession() as session:
-            comp_url = f"{self.base_url}/competitions/PL"
-            async with session.get(comp_url, headers=self.headers) as response:
-                if response.status == 200:
-                    comp_data = await response.json()
-                    return {
-                        'id': comp_data.get('id'),
-                        'name': comp_data.get('name', 'Premier League'),
-                        'code': comp_data.get('code', 'PL'),
-                        'type': comp_data.get('type', 'LEAGUE'),
-                        'emblem': comp_data.get('emblem', ''),
-                        'current_season': {
-                            'id': comp_data['currentSeason'].get('id') if comp_data.get('currentSeason') else None,
-                            'start_date': comp_data['currentSeason'].get('startDate') if comp_data.get('currentSeason') else None,
-                            'end_date': comp_data['currentSeason'].get('endDate') if comp_data.get('currentSeason') else None,
-                            'current_matchday': comp_data['currentSeason'].get('currentMatchday') if comp_data.get('currentSeason') else None
-                        } if comp_data.get('currentSeason') else None
-                    }
-                elif response.status == 403:
-                    raise ValueError("Invalid API key or rate limit exceeded")
-                elif response.status == 429:
-                    raise ValueError("Rate limit exceeded")
-                else:
-                    raise ValueError(f"API returned status {response.status}")
-    
-    async def get_head_to_head(self, team1_id: int, team2_id: int) -> Dict[str, Any]:
-        """Get head-to-head record between two teams"""
-        api_key = os.getenv("FOOTBALL_DATA_API_KEY", "")
-        if not api_key:
-            raise ValueError("No API key configured")
-        
-        async with aiohttp.ClientSession() as session:
-            h2h_url = f"{self.base_url}/teams/{team1_id}/matches?status=FINISHED"
-            async with session.get(h2h_url, headers=self.headers) as response:
-                if response.status == 200:
-                    matches_data = await response.json()
-                    matches = matches_data.get('matches', [])
-                    
-                    # Filter matches between the two teams
-                    h2h_matches = [
-                        match for match in matches
-                        if (match['homeTeam']['id'] == team2_id or match['awayTeam']['id'] == team2_id)
-                    ]
-                    
-                    team1_wins = 0
-                    team2_wins = 0
-                    draws = 0
-                    team1_goals = 0
-                    team2_goals = 0
-                    
-                    recent_matches = []
-                    for match in h2h_matches[:5]:  # Last 5 matches
-                        home_score = match['score']['fullTime'].get('home') if match['score'].get('fullTime') else 0
-                        away_score = match['score']['fullTime'].get('away') if match['score'].get('fullTime') else 0
-                        
-                        if match['homeTeam']['id'] == team1_id:
-                            team1_goals += home_score
-                            team2_goals += away_score
-                            if home_score > away_score:
-                                team1_wins += 1
-                            elif away_score > home_score:
-                                team2_wins += 1
-                            else:
-                                draws += 1
-                        else:
-                            team1_goals += away_score
-                            team2_goals += home_score
-                            if away_score > home_score:
-                                team1_wins += 1
-                            elif home_score > away_score:
-                                team2_wins += 1
-                            else:
-                                draws += 1
-                        
-                        recent_matches.append({
-                            'date': match['utcDate'],
-                            'home_team': match['homeTeam']['name'],
-                            'away_team': match['awayTeam']['name'],
-                            'score': {
-                                'home': home_score,
-                                'away': away_score
-                            }
-                        })
-                    
-                    return {
-                        'total_matches': len(h2h_matches),
-                        'team1_wins': team1_wins,
-                        'team2_wins': team2_wins,
-                        'draws': draws,
-                        'team1_goals': team1_goals,
-                        'team2_goals': team2_goals,
-                        'recent_matches': recent_matches
-                    }
-                elif response.status == 403:
-                    raise ValueError("Invalid API key or rate limit exceeded")
-                elif response.status == 429:
-                    raise ValueError("Rate limit exceeded")
-                else:
-                    raise ValueError(f"API returned status {response.status}")

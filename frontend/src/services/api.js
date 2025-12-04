@@ -66,8 +66,6 @@ export const apiService = {
   getTeams: () => api.get('/teams'),
   getTeamStats: (teamName, season = '2023-24') => 
     api.get(`/teams/${encodeURIComponent(teamName)}/stats?season=${season}`),
-  getTeamMatches: (teamId, limit = 10) => 
-    api.get(`/teams/${teamId}/matches?limit=${limit}`),
 
   // Predictions
   predictMatch: (data) => api.post('/predict', data),
@@ -76,16 +74,6 @@ export const apiService = {
   // Fixtures and League Table
   getUpcomingFixtures: () => api.get('/fixtures'),
   getLeagueTable: (season = '2023-24') => api.get(`/league-table?season=${season}`),
-  getLeagueStandings: (season = '2023-24') => api.get(`/league-standings?season=${season}`),
-
-  // Matches
-  getMatchDetails: (matchId) => api.get(`/matches/${matchId}`),
-
-  // Competition
-  getCompetitionInfo: () => api.get('/competition'),
-
-  // Head-to-head
-  getHeadToHead: (team1Id, team2Id) => api.get(`/head-to-head/${team1Id}/${team2Id}`),
 
   // Admin/Scheduler
   getSchedulerStatus: () => api.get('/admin/scheduler-status'),

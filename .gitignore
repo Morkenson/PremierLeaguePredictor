@@ -1,3 +1,7 @@
 node_modules/
 frontend/node_modules/
 .env
+
+# Backend cache and models
+backend/data_cache/
+backend/models/*.joblib

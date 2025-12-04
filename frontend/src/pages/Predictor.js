@@ -240,7 +240,9 @@ const Predictor = () => {
   const [homeTeam, setHomeTeam] = useState('');
   const [awayTeam, setAwayTeam] = useState('');
   const [prediction, setPrediction] = useState(null);
+  const [batchPredictions, setBatchPredictions] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [loadingBatch, setLoadingBatch] = useState(false);
   const [error, setError] = useState(null);
   const [loadingTeams, setLoadingTeams] = useState(true);
 
@@ -292,8 +294,41 @@ const Predictor = () => {
     }
   };
 
+  const handleBatchPredict = async () => {
+    setLoadingBatch(true);
+    setError(null);
+    setBatchPredictions(null);
+    setPrediction(null); // Clear single prediction when showing batch
+
+    try {
+      const predictions = await apiService.getBatchPredictions();
+      setBatchPredictions(predictions);
+    } catch (error) {
+      console.error('Batch prediction error:', error);
+      setError(error.response?.data?.detail || error.message || 'Failed to generate batch predictions. Please try again.');
+    } finally {
+      setLoadingBatch(false);
+    }
+  };
+
   const formatProbability = (prob) => {
     return `${(prob * 100).toFixed(1)}%`;
+  };
+
+  const formatDate = (dateString) => {
+    if (!dateString) return 'TBD';
+    try {
+      const date = new Date(dateString);
+      return date.toLocaleDateString('en-US', { 
+        weekday: 'short', 
+        month: 'short', 
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+    } catch {
+      return dateString;
+    }
   };
 
   if (loadingTeams) {
@@ -318,7 +353,7 @@ const Predictor = () => {
             <Select
               value={homeTeam}
               onChange={(e) => setHomeTeam(e.target.value)}
-              disabled={loading}
+              disabled={loading || loadingBatch}
             >
               <option value="">Select home team</option>
               {teams.map((team) => (
@@ -334,7 +369,7 @@ const Predictor = () => {
             <Select
               value={awayTeam}
               onChange={(e) => setAwayTeam(e.target.value)}
-              disabled={loading}
+              disabled={loading || loadingBatch}
             >
               <option value="">Select away team</option>
               {teams.map((team) => (
@@ -345,10 +380,20 @@ const Predictor = () => {
             </Select>
           </FormGroup>
 
-          <Button onClick={handlePredict} disabled={loading || !homeTeam || !awayTeam}>
+          <Button onClick={handlePredict} disabled={loading || loadingBatch || !homeTeam || !awayTeam}>
             {loading ? 'Predicting...' : 'Predict Match'}
           </Button>
         </FormRow>
+
+        <div style={{ marginTop: '20px', paddingTop: '20px', borderTop: '1px solid #2D3748' }}>
+          <Button 
+            onClick={handleBatchPredict} 
+            disabled={loading || loadingBatch}
+            style={{ width: '100%' }}
+          >
+            {loadingBatch ? 'Predicting Next Week\'s Fixtures...' : 'Predict Next Week\'s Fixtures'}
+          </Button>
+        </div>
       </FormCard>
 
       {prediction && (
@@ -410,6 +455,90 @@ const Predictor = () => {
               ))}
             </KeyFactors>
           )}
+        </PredictionCard>
+      )}
+
+      {batchPredictions && batchPredictions.length > 0 && (
+        <PredictionCard>
+          <MatchTitle>Next Week's Fixtures Predictions</MatchTitle>
+          <div style={{ display: 'grid', gap: '20px', marginTop: '20px' }}>
+            {batchPredictions.map((pred, index) => (
+              <div 
+                key={index}
+                style={{
+                  background: '#0A0E27',
+                  borderRadius: '8px',
+                  padding: '20px',
+                  border: '1px solid #2D3748'
+                }}
+              >
+                <div style={{ 
+                  color: '#A0AEC0', 
+                  fontSize: '12px', 
+                  marginBottom: '10px' 
+                }}>
+                  {formatDate(pred.date)}
+                </div>
+                <div style={{ 
+                  display: 'flex', 
+                  justifyContent: 'space-between', 
+                  alignItems: 'center',
+                  marginBottom: '15px'
+                }}>
+                  <div style={{ flex: 1, textAlign: 'center' }}>
+                    <div style={{ color: '#FFFFFF', fontSize: '16px', marginBottom: '8px' }}>
+                      {pred.home_team}
+                    </div>
+                    <div style={{ color: '#00D4AA', fontSize: '32px', fontWeight: '700' }}>
+                      {pred.predicted_score.home}
+                    </div>
+                  </div>
+                  <VS style={{ margin: '0 20px' }}>VS</VS>
+                  <div style={{ flex: 1, textAlign: 'center' }}>
+                    <div style={{ color: '#FFFFFF', fontSize: '16px', marginBottom: '8px' }}>
+                      {pred.away_team}
+                    </div>
+                    <div style={{ color: '#00D4AA', fontSize: '32px', fontWeight: '700' }}>
+                      {pred.predicted_score.away}
+                    </div>
+                  </div>
+                </div>
+                <div style={{ 
+                  display: 'grid', 
+                  gridTemplateColumns: 'repeat(3, 1fr)', 
+                  gap: '10px',
+                  marginTop: '15px'
+                }}>
+                  <div style={{ textAlign: 'center' }}>
+                    <div style={{ color: '#A0AEC0', fontSize: '11px' }}>Home Win</div>
+                    <div style={{ color: '#00D4AA', fontSize: '18px', fontWeight: '600' }}>
+                      {formatProbability(pred.home_win_probability)}
+                    </div>
+                  </div>
+                  <div style={{ textAlign: 'center' }}>
+                    <div style={{ color: '#A0AEC0', fontSize: '11px' }}>Draw</div>
+                    <div style={{ color: '#00D4AA', fontSize: '18px', fontWeight: '600' }}>
+                      {formatProbability(pred.draw_probability)}
+                    </div>
+                  </div>
+                  <div style={{ textAlign: 'center' }}>
+                    <div style={{ color: '#A0AEC0', fontSize: '11px' }}>Away Win</div>
+                    <div style={{ color: '#00D4AA', fontSize: '18px', fontWeight: '600' }}>
+                      {formatProbability(pred.away_win_probability)}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </PredictionCard>
+      )}
+
+      {batchPredictions && batchPredictions.length === 0 && (
+        <PredictionCard>
+          <div style={{ textAlign: 'center', color: '#A0AEC0' }}>
+            No upcoming fixtures found for next week.
+          </div>
         </PredictionCard>
       )}
     </PredictorContainer>

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import styled from 'styled-components';
 import { motion } from 'framer-motion';
 import { apiService } from '../services/api';
@@ -105,7 +105,9 @@ const StatValue = styled.div`
   line-height: ${props => props.theme.typography.lineHeight.tight};
 `;
 
-const StatChange = styled.div`
+const StatChange = styled.div.withConfig({
+  shouldForwardProp: (prop) => prop !== 'positive',
+})`
   font-size: ${props => props.theme.typography.fontSize.xs};
   color: ${props => props.positive ? props.theme.colors.success : props.theme.colors.textMuted};
   display: flex;
@@ -424,6 +426,7 @@ const Dashboard = () => {
   const [topTeamFixtures, setTopTeamFixtures] = useState([]);
   const [loadingTeams, setLoadingTeams] = useState(true);
   const [loadingFixtures, setLoadingFixtures] = useState(true);
+  const loadingFixturesRef = useRef(false);
 
   useEffect(() => {
     // Debug: Log environment variable in development
@@ -436,7 +439,7 @@ const Dashboard = () => {
     
     loadSchedulerStatus();
     loadTopTeams();
-    loadTopTeamFixtures(); // Load fixtures immediately
+    loadTopTeamFixtures(); // Load fixtures immediately (will be filtered after teams load)
     // Refresh status every minute
     const interval = setInterval(loadSchedulerStatus, 60000);
     return () => clearInterval(interval);
@@ -457,10 +460,13 @@ const Dashboard = () => {
       // Get top 6 teams
       const top = table.slice(0, 6);
       setTopTeams(top);
-      // Reload fixtures with new team names
+      // Reload fixtures with new team names (ref guard will prevent duplicate API call if first one is still loading)
       if (top.length > 0) {
         const teamNames = top.map(team => team.team_name);
         loadTopTeamFixtures(teamNames);
+      } else {
+        // If no teams, still load fixtures without filtering
+        loadTopTeamFixtures();
       }
     } catch (error) {
       console.error('Failed to load top teams:', error);
@@ -471,7 +477,13 @@ const Dashboard = () => {
   };
 
   const loadTopTeamFixtures = async (teamNames = null) => {
+    // Prevent duplicate calls if already loading
+    if (loadingFixturesRef.current) {
+      return;
+    }
+    
     try {
+      loadingFixturesRef.current = true;
       setLoadingFixtures(true);
       const fixtures = await apiService.getUpcomingFixtures();
       
@@ -518,6 +530,7 @@ const Dashboard = () => {
       setTopTeamFixtures([]);
     } finally {
       setLoadingFixtures(false);
+      loadingFixturesRef.current = false;
     }
   };
 

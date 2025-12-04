@@ -3,11 +3,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
-import pandas as pd
-import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime
 import uvicorn
 import os
+import sys
 import asyncio
 import time
 import logging
@@ -16,8 +15,6 @@ from dotenv import load_dotenv
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-import sys
-import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from models.match_predictor_simple import MatchPredictor
@@ -130,17 +127,31 @@ async def log_requests(request: Request, call_next):
 @app.on_event("startup")
 async def startup_event():
     """Initialize the prediction model and scheduler on startup"""
+    logger.info("Starting application initialization...")
     try:
         # Initialize data and model
+        logger.info("Initializing prediction model...")
         await prediction_service.initialize_model()
-        print("SUCCESS: Prediction model initialized successfully")
+        
+        if prediction_service.is_initialized:
+            logger.info("SUCCESS: Prediction model initialized successfully")
+            print("SUCCESS: Prediction model initialized successfully")
+        else:
+            logger.warning("WARNING: Prediction model initialization completed but model is not ready")
+            print("WARNING: Prediction model initialization completed but model is not ready")
         
         # Start daily update scheduler
         scheduler_service.start_scheduler()
+        logger.info("SUCCESS: Daily update scheduler started")
         print("SUCCESS: Daily update scheduler started")
         
     except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
+        logger.error(f"ERROR: Error during startup: {e}")
+        logger.error(f"Traceback: {error_trace}")
         print(f"ERROR: Error during startup: {e}")
+        print(f"Traceback: {error_trace}")
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -155,6 +166,44 @@ async def root():
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+
+@app.get("/model-status")
+async def get_model_status():
+    """Get the status of the prediction model"""
+    try:
+        status = {
+            "is_initialized": prediction_service.is_initialized,
+            "is_trained": prediction_service.predictor.is_trained if prediction_service.predictor else False,
+            "has_models": len(prediction_service.predictor.models) > 0 if prediction_service.predictor else False,
+            "has_training_data": False,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        # Check if training data exists
+        try:
+            training_data = prediction_service.data_service.get_training_data()
+            status["has_training_data"] = len(training_data) > 0
+            status["training_data_count"] = len(training_data)
+        except:
+            pass
+        
+        return JSONResponse(
+            content=status,
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Content-Type": "application/json"
+            }
+        )
+    except Exception as e:
+        logger.error(f"Error getting model status: {e}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(e)},
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Content-Type": "application/json"
+            }
+        )
 
 @app.get("/teams", response_model=List[TeamInfo])
 async def get_teams():
@@ -178,14 +227,66 @@ async def get_team_stats(team_name: str, season: str = "2023-24"):
 async def predict_match(request: MatchPredictionRequest):
     """Predict the outcome of a Premier League match"""
     try:
+        logger.info(f"Prediction request: {request.home_team} vs {request.away_team}")
+        
+        # Check if model is initialized, if not try to initialize
+        if not prediction_service.is_initialized:
+            logger.warning("Model not initialized, attempting to initialize now...")
+            try:
+                await prediction_service.initialize_model()
+                if not prediction_service.is_initialized:
+                    logger.error("Failed to initialize model after retry")
+                    # Get more details about why it failed
+                    try:
+                        training_data = prediction_service.data_service.get_training_data()
+                        training_count = len(training_data) if training_data is not None else 0
+                        detail_msg = f"Prediction model is not ready. Training data: {training_count} records. Please check /model-status endpoint or server logs."
+                    except:
+                        detail_msg = "Prediction model is not ready. Please check /model-status endpoint or server logs."
+                    
+                    raise HTTPException(
+                        status_code=503,
+                        detail=detail_msg
+                    )
+                logger.info("Model initialized successfully on demand")
+            except HTTPException:
+                # Re-raise HTTP exceptions
+                raise
+            except RuntimeError as init_error:
+                # RuntimeError from initialize_model contains detailed error info
+                logger.error(f"Error initializing model on demand: {init_error}", exc_info=True)
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Prediction model initialization failed: {str(init_error)}. Please check server logs for details."
+                )
+            except Exception as init_error:
+                logger.error(f"Unexpected error initializing model on demand: {init_error}", exc_info=True)
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Prediction model initialization failed: {str(init_error)}. Please check server logs."
+                )
+        
         prediction = await prediction_service.predict_match(
             request.home_team,
             request.away_team,
             request.season
         )
+        
+        logger.info(f"Prediction successful: {prediction.get('home_win_probability', 0):.2f}% home win")
         return prediction
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
+    except ValueError as e:
+        logger.error(f"ValueError in prediction: {e}", exc_info=True)
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error making prediction: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to generate prediction: {str(e)}"
+        )
 
 @app.get("/fixtures")
 async def get_upcoming_fixtures():
@@ -274,51 +375,6 @@ async def get_league_table(season: str = "2023-24"):
             }
         )
 
-@app.get("/league-standings")
-async def get_league_standings(season: str = "2023-24"):
-    """Get league standings directly from API"""
-    try:
-        standings = await data_service.get_league_standings_from_api(season)
-        return standings
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/teams/{team_id}/matches")
-async def get_team_matches(team_id: int, limit: int = 10):
-    """Get all matches for a specific team"""
-    try:
-        matches = await data_service.get_team_matches(team_id, limit)
-        return matches
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/matches/{match_id}")
-async def get_match_details(match_id: int):
-    """Get detailed information about a specific match"""
-    try:
-        match = await data_service.get_match_details(match_id)
-        return match
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/competition")
-async def get_competition_info():
-    """Get Premier League competition information"""
-    try:
-        info = await data_service.get_competition_info()
-        return info
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/head-to-head/{team1_id}/{team2_id}")
-async def get_head_to_head(team1_id: int, team2_id: int):
-    """Get head-to-head record between two teams"""
-    try:
-        h2h = await data_service.get_head_to_head(team1_id, team2_id)
-        return h2h
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
 @app.post("/admin/refresh-data")
 async def manual_refresh_data():
     """Manually trigger data refresh and model retraining"""
@@ -366,6 +422,47 @@ async def get_scheduler_status():
         return JSONResponse(
             status_code=500,
             content={"detail": str(e)},
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Content-Type": "application/json"
+            }
+        )
+
+@app.post("/admin/initialize-model")
+async def manual_initialize_model():
+    """Manually trigger model initialization"""
+    try:
+        logger.info("Manual model initialization requested...")
+        await prediction_service.initialize_model()
+        
+        if prediction_service.is_initialized:
+            return {
+                "status": "success",
+                "message": "Model initialized successfully",
+                "is_initialized": True,
+                "is_trained": prediction_service.predictor.is_trained,
+                "timestamp": datetime.now().isoformat()
+            }
+        else:
+            return {
+                "status": "error",
+                "message": "Model initialization completed but model is not ready",
+                "is_initialized": False,
+                "is_trained": prediction_service.predictor.is_trained if prediction_service.predictor else False,
+                "timestamp": datetime.now().isoformat()
+            }
+    except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
+        logger.error(f"Error initializing model: {e}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "error",
+                "message": f"Error initializing model: {str(e)}",
+                "detail": error_trace,
+                "timestamp": datetime.now().isoformat()
+            },
             headers={
                 "Access-Control-Allow-Origin": "*",
                 "Content-Type": "application/json"
